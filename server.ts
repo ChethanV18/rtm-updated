@@ -6,21 +6,68 @@ import fs from "fs";
 
 const db = new Database("rtm.db");
 
-// Initialize database
-db.exec(`
-  CREATE TABLE IF NOT EXISTS requirements (
-    id TEXT PRIMARY KEY,
-    description TEXT,
-    dev TEXT DEFAULT 'pending',
-    test TEXT DEFAULT 'pending',
-    report TEXT DEFAULT 'pending',
-    deploy TEXT DEFAULT 'pending',
-    usage TEXT DEFAULT 'pending',
-    remarks TEXT DEFAULT '',
-    status TEXT DEFAULT 'Not Started',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`);
+// Initialize database with migration support
+const tableInfo = db.prepare("PRAGMA table_info(requirements)").all() as any[];
+
+if (tableInfo.length === 0) {
+  // Table doesn't exist, create it
+  db.exec(`
+    CREATE TABLE requirements (
+      uid TEXT PRIMARY KEY,
+      requirement_id TEXT UNIQUE,
+      description TEXT,
+      dev TEXT DEFAULT 'pending',
+      test TEXT DEFAULT 'pending',
+      report TEXT DEFAULT 'pending',
+      deploy TEXT DEFAULT 'pending',
+      usage TEXT DEFAULT 'pending',
+      remarks TEXT DEFAULT '',
+      status TEXT DEFAULT 'Not Started',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+} else {
+  // Table exists, check for missing columns and migrate if necessary
+  const columns = tableInfo.map(col => col.name);
+  
+  if (!columns.includes('uid')) {
+    // This is the old schema with 'id' as primary key
+    // We need to migrate to the new schema
+    console.log("Migrating database schema...");
+    db.transaction(() => {
+      // 1. Rename old table
+      db.exec("ALTER TABLE requirements RENAME TO requirements_old");
+      
+      // 2. Create new table
+      db.exec(`
+        CREATE TABLE requirements (
+          uid TEXT PRIMARY KEY,
+          requirement_id TEXT UNIQUE,
+          description TEXT,
+          dev TEXT DEFAULT 'pending',
+          test TEXT DEFAULT 'pending',
+          report TEXT DEFAULT 'pending',
+          deploy TEXT DEFAULT 'pending',
+          usage TEXT DEFAULT 'pending',
+          remarks TEXT DEFAULT '',
+          status TEXT DEFAULT 'Not Started',
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      
+      // 3. Copy data from old table
+      // We'll use the old 'id' as both 'uid' and 'requirement_id' initially
+      db.exec(`
+        INSERT INTO requirements (uid, requirement_id, description, dev, test, report, deploy, usage, remarks, status, created_at)
+        SELECT id, id, description, dev, test, report, deploy, usage, remarks, status, created_at FROM requirements_old
+      `);
+      
+      // 4. Drop old table
+      db.exec("DROP TABLE requirements_old");
+    })();
+    console.log("Migration complete.");
+  }
+}
 
 async function startServer() {
   const app = express();
@@ -39,12 +86,13 @@ async function startServer() {
   });
 
   app.post("/api/requirements", (req, res) => {
-    const { id, description, dev, test, report, deploy, usage, remarks, status } = req.body;
+    const { uid, requirement_id, description, dev, test, report, deploy, usage, remarks, status } = req.body;
     try {
       const stmt = db.prepare(`
-        INSERT INTO requirements (id, description, dev, test, report, deploy, usage, remarks, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
+        INSERT INTO requirements (uid, requirement_id, description, dev, test, report, deploy, usage, remarks, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(uid) DO UPDATE SET
+          requirement_id=excluded.requirement_id,
           description=excluded.description,
           dev=excluded.dev,
           test=excluded.test,
@@ -54,20 +102,21 @@ async function startServer() {
           remarks=excluded.remarks,
           status=excluded.status
       `);
-      stmt.run(id, description, dev, test, report, deploy, usage, remarks, status);
+      stmt.run(uid, requirement_id, description, dev, test, report, deploy, usage, remarks, status);
       res.json({ success: true });
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      res.status(500).json({ error: "Failed to save requirement" });
+      res.status(500).json({ error: error.message || "Failed to save requirement" });
     }
   });
 
   app.post("/api/requirements/bulk", (req, res) => {
     const requirements = req.body;
     const insert = db.prepare(`
-      INSERT INTO requirements (id, description, dev, test, report, deploy, usage, remarks, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
+      INSERT INTO requirements (uid, requirement_id, description, dev, test, report, deploy, usage, remarks, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(uid) DO UPDATE SET
+        requirement_id=excluded.requirement_id,
         description=excluded.description,
         dev=excluded.dev,
         test=excluded.test,
@@ -81,7 +130,8 @@ async function startServer() {
     const transaction = db.transaction((reqs) => {
       for (const req of reqs) {
         insert.run(
-          req.id, 
+          req.uid || Math.random().toString(36).substr(2, 9),
+          req.requirement_id || req.id || '', 
           req.description || '', 
           req.dev || 'pending', 
           req.test || 'pending', 
@@ -97,17 +147,19 @@ async function startServer() {
     try {
       transaction(requirements);
       res.json({ success: true });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to bulk save requirements" });
+    } catch (error: any) {
+      console.error(error);
+      res.status(500).json({ error: error.message || "Failed to bulk save requirements" });
     }
   });
 
-  app.delete("/api/requirements/:id", (req, res) => {
+  app.delete("/api/requirements/:uid", (req, res) => {
     try {
-      db.prepare("DELETE FROM requirements WHERE id = ?").run(req.params.id);
+      db.prepare("DELETE FROM requirements WHERE uid = ?").run(req.params.uid);
       res.json({ success: true });
-    } catch (error) {
-      res.status(500).json({ error: "Failed to delete requirement" });
+    } catch (error: any) {
+      console.error(error);
+      res.status(500).json({ error: error.message || "Failed to delete requirement" });
     }
   });
 

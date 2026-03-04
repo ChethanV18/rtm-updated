@@ -66,11 +66,20 @@ export default function App() {
 
   const saveRequirement = async (req: Requirement) => {
     try {
-      await fetch('/api/requirements', {
+      const res = await fetch('/api/requirements', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(req),
       });
+      if (!res.ok) {
+        const errorData = await res.json();
+        console.error('Failed to save requirement:', errorData.error);
+        // If it's a uniqueness error or similar, we might want to alert the user
+        if (res.status === 500 && errorData.error?.includes('UNIQUE constraint failed')) {
+          alert('Requirement ID must be unique. Please use a different ID.');
+          fetchRequirements(); // Revert to last known good state
+        }
+      }
     } catch (error) {
       console.error('Failed to save:', error);
     }
@@ -78,7 +87,8 @@ export default function App() {
 
   const addRequirement = () => {
     const newReq: Requirement = {
-      id: `REQ-${Date.now()}`,
+      uid: Math.random().toString(36).substr(2, 9),
+      requirement_id: `REQ-${Date.now()}`,
       description: 'New Requirement',
       dev: 'pending',
       test: 'pending',
@@ -92,9 +102,9 @@ export default function App() {
     saveRequirement(newReq);
   };
 
-  const updateRequirement = (id: string, updates: Partial<Requirement>) => {
+  const updateRequirement = (uid: string, updates: Partial<Requirement>) => {
     const updated = requirements.map(req => {
-      if (req.id === id) {
+      if (req.uid === uid) {
         const newReq = { ...req, ...updates };
         saveRequirement(newReq);
         return newReq;
@@ -104,18 +114,29 @@ export default function App() {
     setRequirements(updated);
   };
 
-  const deleteRequirement = async (id: string) => {
+  const deleteRequirement = async (uid: string) => {
     if (!confirm('Are you sure you want to delete this requirement?')) return;
     try {
-      await fetch(`/api/requirements/${id}`, { method: 'DELETE' });
-      setRequirements(requirements.filter(req => req.id !== id));
+      await fetch(`/api/requirements/${uid}`, { method: 'DELETE' });
+      setRequirements(requirements.filter(req => req.uid !== uid));
     } catch (error) {
       console.error('Failed to delete:', error);
     }
   };
 
   const exportToExcel = () => {
-    const worksheet = XLSX.utils.json_to_sheet(requirements);
+    const exportData = requirements.map(req => ({
+      'ID': req.requirement_id,
+      'Description': req.description,
+      'Dev': req.dev,
+      'Test': req.test,
+      'Report': req.report,
+      'Deploy': req.deploy,
+      'Usage': req.usage,
+      'Remarks': req.remarks,
+      'Status': req.status
+    }));
+    const worksheet = XLSX.utils.json_to_sheet(exportData);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Requirements");
     XLSX.writeFile(workbook, "RTM_Export.xlsx");
@@ -134,7 +155,8 @@ export default function App() {
       const data = XLSX.utils.sheet_to_json(ws) as any[];
       
       const formattedData: Requirement[] = data.map(row => ({
-        id: String(row.id || `REQ-${Math.random().toString(36).substr(2, 9)}`),
+        uid: String(row.uid || Math.random().toString(36).substr(2, 9)),
+        requirement_id: String(row.requirement_id || row.id || ''),
         description: String(row.description || ''),
         dev: (row.dev as PhaseStatus) || 'pending',
         test: (row.test as PhaseStatus) || 'pending',
@@ -160,8 +182,8 @@ export default function App() {
   };
 
   const filteredRequirements = requirements.filter(req => 
-    req.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    req.description.toLowerCase().includes(searchQuery.toLowerCase())
+    (req.requirement_id?.toLowerCase() || '').includes(searchQuery.toLowerCase()) ||
+    (req.description?.toLowerCase() || '').includes(searchQuery.toLowerCase())
   );
 
   return (
@@ -225,7 +247,7 @@ export default function App() {
             <thead>
               <tr className="bg-slate-800/50 border-bottom border-brand-border">
                 <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-slate-400">ID</th>
-                <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-slate-400">Description</th>
+                <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-slate-400 min-w-[350px]">Description</th>
                 <th className="px-4 py-4 text-xs font-semibold uppercase tracking-wider text-slate-400 text-center">Dev</th>
                 <th className="px-4 py-4 text-xs font-semibold uppercase tracking-wider text-slate-400 text-center">Test</th>
                 <th className="px-4 py-4 text-xs font-semibold uppercase tracking-wider text-slate-400 text-center">Report</th>
@@ -240,7 +262,7 @@ export default function App() {
               <AnimatePresence mode="popLayout">
                 {filteredRequirements.map((req) => (
                   <motion.tr 
-                    key={req.id}
+                    key={req.uid}
                     layout
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -248,14 +270,19 @@ export default function App() {
                     className="hover:bg-slate-800/30 transition-colors group"
                   >
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <span className="text-sm font-mono text-slate-400">{req.id}</span>
-                    </td>
-                    <td className="px-6 py-4">
                       <input 
                         type="text" 
-                        value={req.description}
-                        onChange={(e) => updateRequirement(req.id, { description: e.target.value })}
-                        className="w-full bg-transparent border-none focus:ring-1 focus:ring-brand-accent rounded px-2 py-1 text-sm text-slate-200"
+                        value={req.requirement_id || ''}
+                        onChange={(e) => updateRequirement(req.uid, { requirement_id: e.target.value })}
+                        className="bg-transparent border-none focus:ring-1 focus:ring-brand-accent rounded px-2 py-1 text-sm font-mono text-slate-400 w-32"
+                      />
+                    </td>
+                    <td className="px-6 py-4">
+                      <textarea 
+                        value={req.description || ''}
+                        onChange={(e) => updateRequirement(req.uid, { description: e.target.value })}
+                        rows={2}
+                        className="w-full bg-transparent border-none focus:ring-1 focus:ring-brand-accent rounded px-2 py-1 text-sm text-slate-200 resize-y custom-scrollbar"
                       />
                     </td>
                     
@@ -264,7 +291,7 @@ export default function App() {
                       <td key={phase} className="px-4 py-4 text-center">
                         <PhaseDropdown 
                           value={req[phase as keyof Requirement] as PhaseStatus} 
-                          onChange={(val) => updateRequirement(req.id, { [phase]: val })}
+                          onChange={(val) => updateRequirement(req.uid, { [phase]: val })}
                         />
                       </td>
                     ))}
@@ -272,8 +299,8 @@ export default function App() {
                     <td className="px-6 py-4 min-w-[250px]">
                       <textarea 
                         placeholder="Add remarks..."
-                        value={req.remarks}
-                        onChange={(e) => updateRequirement(req.id, { remarks: e.target.value })}
+                        value={req.remarks || ''}
+                        onChange={(e) => updateRequirement(req.uid, { remarks: e.target.value })}
                         rows={2}
                         className="w-full bg-slate-900/50 border border-brand-border focus:border-brand-accent rounded px-3 py-1.5 text-sm text-slate-300 placeholder:text-slate-600 transition-all resize-y custom-scrollbar"
                       />
@@ -282,7 +309,7 @@ export default function App() {
                     <td className="px-6 py-4">
                       <select 
                         value={req.status}
-                        onChange={(e) => updateRequirement(req.id, { status: e.target.value as RequirementStatus })}
+                        onChange={(e) => updateRequirement(req.uid, { status: e.target.value as RequirementStatus })}
                         className={cn(
                           "bg-slate-900/50 border border-brand-border rounded px-3 py-1.5 text-xs font-medium focus:outline-none focus:ring-1 focus:ring-brand-accent transition-all",
                           req.status === 'Complete' ? 'text-emerald-400' : req.status === 'In Progress' ? 'text-blue-400' : 'text-slate-400'
@@ -296,7 +323,7 @@ export default function App() {
                     
                     <td className="px-6 py-4 text-right">
                       <button 
-                        onClick={() => deleteRequirement(req.id)}
+                        onClick={() => deleteRequirement(req.uid)}
                         className="p-2 text-slate-500 hover:text-rose-400 hover:bg-rose-400/10 rounded-lg transition-all opacity-0 group-hover:opacity-100"
                       >
                         <Trash2 className="w-4 h-4" />

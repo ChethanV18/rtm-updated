@@ -2,7 +2,8 @@ export type PhaseStatus = 'pending' | 'completed' | 'failed';
 export type RequirementStatus = 'Not Started' | 'In Progress' | 'Complete';
 
 export interface Requirement {
-  id: string;
+  uid: string;
+  requirement_id: string;
   description: string;
   dev: PhaseStatus;
   test: PhaseStatus;
